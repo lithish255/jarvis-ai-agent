@@ -1,0 +1,154 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Jarvis</title>
+<link rel="manifest" href="/manifest.json">
+<link rel="apple-touch-icon" href="/icon-192.png">
+<meta name="theme-color" content="#0b0e14">
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/KaTeX/0.16.9/katex.min.css">
+<script src="https://cdnjs.cloudflare.com/ajax/libs/KaTeX/0.16.9/katex.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/KaTeX/0.16.9/contrib/auto-render.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/marked/12.0.0/marked.min.js"></script>
+<style>
+  body { font-family: -apple-system, system-ui, sans-serif; background:#0b0e14; color:#e6e6e6; margin:0; padding:0 16px; }
+  #chat { max-width:600px; margin:0 auto; padding-top:20px; padding-bottom:120px; }
+  h1 { text-align:center; font-weight:600; letter-spacing:1px; color:#4fd1ff; }
+  .msg { padding:10px 14px; border-radius:12px; margin:8px 0; max-width:85%; line-height:1.5; }
+  .msg p { margin: 0.4em 0; }
+  .msg table { border-collapse: collapse; margin: 8px 0; }
+  .msg th, .msg td { border: 1px solid #3a4257; padding: 4px 8px; text-align: left; }
+  .msg code { background:#11151f; padding:1px 5px; border-radius:4px; font-size:0.9em; font-family: "Courier New", monospace; }
+  .msg pre { background:#11151f; border-radius:8px; padding:10px 14px; overflow-x:auto; margin: 8px 0; }
+  .msg pre code { display:block; padding:0; background:none; white-space:pre; font-size:1em; line-height:1.4; }
+  .katex { color: #e6e6e6; }
+  .user { background:#1f6feb; margin-left:auto; text-align:right; }
+  .bot { background:#1c2230; }
+  #bar { position:fixed; bottom:0; left:0; right:0; background:#0b0e14; padding:12px; display:flex; gap:8px; max-width:600px; margin:0 auto; }
+  #input { flex:1; padding:12px; border-radius:20px; border:none; background:#1c2230; color:white; font-size:16px; }
+  button { border:none; border-radius:50%; width:48px; height:48px; font-size:20px; background:#1f6feb; color:white; cursor:pointer; }
+  #mic.listening { background:#e63946; }
+</style>
+</head>
+<body>
+  <h1>🧠 JARVIS</h1>
+  <div id="chat"></div>
+  <div id="bar">
+    <input id="input" placeholder="Ask Jarvis anything..." />
+    <button id="mic" title="Speak">🎤</button>
+    <button id="send" title="Send">➤</button>
+    <button id="clear" title="Clear chat history" style="font-size:16px;">🗑</button>
+  </div>
+
+<script>
+let conversation = [];
+
+async function loadHistory() {
+  try {
+    const res = await fetch("/api/history");
+    const data = await res.json();
+    if (data.history && data.history.length) {
+      conversation = data.history;
+      for (const m of conversation) {
+        if (m.role === "user" || m.role === "assistant") {
+          addMsg(m.content, m.role === "user" ? "user" : "bot");
+        }
+      }
+    }
+  } catch (e) {
+    console.error("Could not load history", e);
+  }
+}
+loadHistory();
+
+function addMsg(text, who) {
+  const el = document.createElement("div");
+  el.className = "msg " + who;
+  if (who === "bot") {
+    el.innerHTML = marked.parse(text);
+    renderMathInElement(el, {
+      delimiters: [
+        { left: "$$", right: "$$", display: true },
+        { left: "\\[", right: "\\]", display: true },
+        { left: "\\(", right: "\\)", display: false },
+        { left: "$", right: "$", display: false },
+      ],
+    });
+  } else {
+    el.textContent = text;
+  }
+  document.getElementById("chat").appendChild(el);
+  window.scrollTo(0, document.body.scrollHeight);
+}
+
+function speak(text) {
+  // Strip markdown/LaTeX symbols so it doesn't read them out loud
+  const clean = text
+    .replace(/\\\[|\\\]|\\\(|\\\)/g, "")
+    .replace(/\$\$?/g, "")
+    .replace(/\\[a-zA-Z]+/g, "")
+    .replace(/[*_#`]/g, "")
+    .replace(/\|/g, " ");
+  const u = new SpeechSynthesisUtterance(clean);
+  speechSynthesis.speak(u);
+}
+
+async function sendMessage(text) {
+  if (!text.trim()) return;
+  addMsg(text, "user");
+  conversation.push({ role: "user", content: text });
+
+  const res = await fetch("/api/chat", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ messages: conversation }),
+  });
+  const data = await res.json();
+  if (data.conversation) conversation = data.conversation;
+  addMsg(data.reply, "bot");
+  speak(data.reply);
+}
+
+document.getElementById("send").onclick = () => {
+  const input = document.getElementById("input");
+  sendMessage(input.value);
+  input.value = "";
+};
+document.getElementById("input").addEventListener("keydown", (e) => {
+  if (e.key === "Enter") document.getElementById("send").click();
+});
+
+document.getElementById("clear").onclick = async () => {
+  if (!confirm("Clear all chat history? This can't be undone.")) return;
+  await fetch("/api/clear-history", { method: "POST" });
+  conversation = [];
+  document.getElementById("chat").innerHTML = "";
+};
+
+// Register service worker so the browser offers "Add to Home Screen" as a real app install
+if ("serviceWorker" in navigator) {
+  navigator.serviceWorker.register("/service-worker.js").catch((e) => console.error("SW failed", e));
+}
+
+// --- Voice input (Chrome / Android) ---
+const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+if (SpeechRecognition) {
+  const recognition = new SpeechRecognition();
+  recognition.lang = "en-US";
+  recognition.onresult = (e) => {
+    const text = e.results[0][0].transcript;
+    sendMessage(text);
+  };
+  recognition.onend = () => document.getElementById("mic").classList.remove("listening");
+
+  document.getElementById("mic").onclick = () => {
+    document.getElementById("mic").classList.add("listening");
+    recognition.start();
+  };
+} else {
+  document.getElementById("mic").style.display = "none";
+}
+</script>
+</body>
+</html>
