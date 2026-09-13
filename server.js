@@ -14,6 +14,16 @@ app.use(express.json());
 app.use(express.static(path.join(__dirname, "public")));
 
 const groq = new Groq({ apiKey: process.env.GROQ_API_KEY });
+const APP_PASSWORD = process.env.APP_PASSWORD || null;
+
+// Simple password gate: every /api/* request must include the correct password
+// in the x-jarvis-pass header. If APP_PASSWORD isn't set in .env, this is skipped
+// (useful for local-only use where WiFi already limits access).
+app.use("/api", (req, res, next) => {
+  if (!APP_PASSWORD) return next(); // no password configured — allow through
+  if (req.headers["x-jarvis-pass"] === APP_PASSWORD) return next();
+  return res.status(401).json({ error: "unauthorized" });
+});
 
 const REMINDERS_FILE = path.join(__dirname, "reminders.json");
 const STUDY_TASKS_FILE = path.join(__dirname, "study_tasks.json");
@@ -204,12 +214,36 @@ function writeJSON(file, data) { fs.writeFileSync(file, JSON.stringify(data, nul
 async function runTool(name, input) {
   switch (name) {
     case "web_search": {
-      const url = `https://api.duckduckgo.com/?q=${encodeURIComponent(input.query)}&format=json&no_html=1&skip_disambig=1`;
+      const key = process.env.SERPER_API_KEY;
+      if (!key) {
+        // Fallback if no Serper key is configured
+        const url = `https://api.duckduckgo.com/?q=${encodeURIComponent(input.query)}&format=json&no_html=1&skip_disambig=1`;
+        try {
+          const res = await fetch(url);
+          const data = await res.json();
+          const summary = data.AbstractText || (data.RelatedTopics && data.RelatedTopics[0]?.Text) || "No direct summary found.";
+          return { result: summary };
+        } catch (e) {
+          return { result: "Search failed: " + e.message };
+        }
+      }
       try {
-        const res = await fetch(url);
+        const res = await fetch("https://google.serper.dev/search", {
+          method: "POST",
+          headers: { "X-API-KEY": key, "Content-Type": "application/json" },
+          body: JSON.stringify({ q: input.query }),
+        });
         const data = await res.json();
-        const summary = data.AbstractText || (data.RelatedTopics && data.RelatedTopics[0]?.Text) || "No direct summary found.";
-        return { result: summary };
+        const parts = [];
+        if (data.answerBox) {
+          parts.push(`Direct answer: ${data.answerBox.answer || data.answerBox.snippet || ""}`);
+        }
+        if (data.organic && data.organic.length) {
+          data.organic.slice(0, 4).forEach((r, i) => {
+            parts.push(`${i + 1}. ${r.title} — ${r.snippet || ""} (${r.link})`);
+          });
+        }
+        return { result: parts.length ? parts.join("\n") : "No results found." };
       } catch (e) {
         return { result: "Search failed: " + e.message };
       }
@@ -377,6 +411,78 @@ Today's schedule: ${todaySchedule.length ? JSON.stringify(todaySchedule) : "noth
 Pending study tasks (${pendingTasks.length}): ${pendingTasks.length ? JSON.stringify(pendingTasks) : "none yet"}.
 Pending roadmap milestones (${pendingRoadmap.length}): ${pendingRoadmap.length ? JSON.stringify(pendingRoadmap) : "none saved yet"}.`;
 }
+
+// ---------- Notifications: figure out what's due right now ----------
+// Tracks what's already been notified today so the same thing doesn't alert repeatedly.
+// Resets naturally since it's just in-memory (clears on server restart / new day).
+let notifiedToday = { date: null, keys: new Set() };
+
+function resetNotifiedIfNewDay(todayStr) {
+  if (notifiedToday.date !== todayStr) {
+    notifiedToday = { date: todayStr, keys: new Set() };
+  }
+}
+
+function isDeadlineToday(deadlineStr, todayName, todayISO) {
+  if (!deadlineStr) return false;
+  const s = deadlineStr.toLowerCase();
+  if (s.includes("today")) return true;
+  if (s.includes(todayName.toLowerCase())) return true;
+  if (s.includes(todayISO)) return true;
+  return false;
+}
+
+app.get("/api/due-check", (req, res) => {
+  const now = new Date();
+  const todayName = now.toLocaleDateString("en-US", { weekday: "long" });
+  const todayISO = now.toISOString().slice(0, 10);
+  resetNotifiedIfNewDay(todayISO);
+
+  const alerts = [];
+
+  // Schedule: classes starting within the next 15 minutes
+  try {
+    const todaySchedule = readJSON(SCHEDULE_FILE)[todayName] || [];
+    for (const entry of todaySchedule) {
+      const key = `sched-${todayISO}-${entry.time}-${entry.subject}`;
+      if (notifiedToday.keys.has(key)) continue;
+      const entryTime = new Date(`${now.toDateString()} ${entry.time}`);
+      const diffMin = (entryTime - now) / 60000;
+      if (diffMin >= 0 && diffMin <= 15) {
+        alerts.push({ type: "schedule", title: `Starting soon: ${entry.subject}`, body: `${entry.time} today` });
+        notifiedToday.keys.add(key);
+      }
+    }
+  } catch {}
+
+  // Study tasks due today
+  try {
+    const tasks = readJSON(STUDY_TASKS_FILE).filter((t) => !t.done);
+    for (const t of tasks) {
+      if (isDeadlineToday(t.deadline, todayName, todayISO)) {
+        const key = `task-${todayISO}-${t.id}`;
+        if (notifiedToday.keys.has(key)) continue;
+        alerts.push({ type: "study_task", title: `Due today: ${t.subject}`, body: t.topic });
+        notifiedToday.keys.add(key);
+      }
+    }
+  } catch {}
+
+  // Reminders due today
+  try {
+    const reminders = readJSON(REMINDERS_FILE);
+    for (const r of reminders) {
+      if (isDeadlineToday(r.when, todayName, todayISO)) {
+        const key = `rem-${todayISO}-${r.text}`;
+        if (notifiedToday.keys.has(key)) continue;
+        alerts.push({ type: "reminder", title: "Reminder", body: r.text });
+        notifiedToday.keys.add(key);
+      }
+    }
+  } catch {}
+
+  res.json({ alerts });
+});
 
 app.get("/api/history", (req, res) => {
   try {

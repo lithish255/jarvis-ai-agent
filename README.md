@@ -109,17 +109,46 @@ it reachable from anywhere (mobile data included), deploy it to Render's free ti
 message after a while takes 20-30 seconds to wake back up — after that it's instant. Fine
 for personal use; nothing to worry about right now.
 
+## Password-protecting it (recommended once deployed publicly)
+Once deployed on Render, anyone with the URL could use it and burn through your free
+Groq quota. To stop that:
+1. In your `.env` file (locally) and in Render's **Environment Variables**, set
+   `APP_PASSWORD` to any password you choose (e.g. `APP_PASSWORD=mysecret123`).
+2. Restart the server (locally) or redeploy (on Render).
+3. Next time you open the app, it will prompt for that password once and remember it
+   in that browser from then on.
+4. If you leave `APP_PASSWORD` unset, no password is required.
+
+## Real web search (Google results via Serper.dev — free)
+The DuckDuckGo fallback is weak. For real Google search results:
+1. Sign up free at serper.dev (no credit card needed, generous free query allowance).
+2. Copy your API key from their dashboard.
+3. Add to .env (and to Render's Environment Variables): SERPER_API_KEY=your_key_here
+4. Restart/redeploy. Jarvis will automatically use real Google results from then on —
+   no code changes needed, it auto-detects the key.
+If SERPER_API_KEY isn't set, it silently falls back to the basic DuckDuckGo search.
+
+## Real alerts & notifications
+Jarvis now checks every minute (while the app is open) for:
+- Classes starting within the next 15 minutes (from your schedule)
+- Study tasks whose deadline is today (matches "today", the weekday name, or the date)
+- Reminders whose "when" field matches today
+When something is due, you get a real browser/phone notification — even if Jarvis is in
+the background, as long as the tab/app is still open. The first time you open the app,
+your browser will ask for notification permission — allow it for this to work.
+Note: this only fires while the app is open somewhere (tab or installed PWA) — it does
+not wake up your phone if the app is fully closed. That would need push notifications
+with a more involved setup (VAPID keys + a push server) — possible as a future upgrade
+if you want it, but not included here.
+
 ## How to extend it further
 
-1. **Better search** — swap the DuckDuckGo call in `runTool()` for
-   [Serper.dev](https://serper.dev) (free tier, real Google results). Just change
-   the `web_search` case in `server.js`.
-2. **Real calendar** — add a `create_event` tool that calls the Google Calendar API
+1. **Real calendar** — add a `create_event` tool that calls the Google Calendar API
    (needs OAuth setup — ask me for this next and I'll build it in).
-3. **Coding help** — add a `run_code` tool using Node's `child_process` to execute
+2. **Coding help** — add a `run_code` tool using Node's `child_process` to execute
    short JS/Python snippets sandboxed, so Jarvis can test code for you.
-4. **Real reminder alerts** — reminders are saved but nothing notifies you yet. Could
-   use the browser Notification API or push notifications once deployed.
+3. **Push notifications when the app is fully closed** — needs VAPID keys and a push
+   server; the current alerts only fire while the tab/app is open.
 
 ## About the free tier
 Groq's free tier gives generous daily limits (plenty for personal use — thousands of

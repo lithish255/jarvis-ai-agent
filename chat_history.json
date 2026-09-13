@@ -1,0 +1,18 @@
+[
+  {
+    "role": "user",
+    "content": "hello"
+  },
+  {
+    "role": "assistant",
+    "content": "Hey! 👋 How can I help you today? If you’d like to set up a schedule, add a study task, or plan a roadmap, just let me know."
+  },
+  {
+    "role": "user",
+    "content": "i am having class in 2min give me a alert'"
+  },
+  {
+    "role": "assistant",
+    "content": "Got it! I’ve set a reminder for “Class now.” Good luck!"
+  }
+]

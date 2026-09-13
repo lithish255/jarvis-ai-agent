@@ -44,9 +44,38 @@
 <script>
 let conversation = [];
 
+// --- Password gate ---
+// If the server has APP_PASSWORD set, every /api request needs the right password
+// in a header. We ask once, remember it in this browser, and re-ask if it's wrong.
+function getStoredPassword() {
+  return localStorage.getItem("jarvis_pass") || "";
+}
+function authHeaders() {
+  return { "x-jarvis-pass": getStoredPassword() };
+}
+async function ensurePassword() {
+  if (!getStoredPassword()) {
+    const pass = prompt("Enter Jarvis password:") || "";
+    localStorage.setItem("jarvis_pass", pass);
+  }
+}
+async function apiFetch(url, options = {}) {
+  await ensurePassword();
+  options.headers = { ...(options.headers || {}), ...authHeaders() };
+  let res = await fetch(url, options);
+  if (res.status === 401) {
+    alert("Wrong password. Try again.");
+    localStorage.removeItem("jarvis_pass");
+    await ensurePassword();
+    options.headers = { ...(options.headers || {}), ...authHeaders() };
+    res = await fetch(url, options);
+  }
+  return res;
+}
+
 async function loadHistory() {
   try {
-    const res = await fetch("/api/history");
+    const res = await apiFetch("/api/history");
     const data = await res.json();
     if (data.history && data.history.length) {
       conversation = data.history;
@@ -99,7 +128,7 @@ async function sendMessage(text) {
   addMsg(text, "user");
   conversation.push({ role: "user", content: text });
 
-  const res = await fetch("/api/chat", {
+  const res = await apiFetch("/api/chat", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ messages: conversation }),
@@ -121,7 +150,7 @@ document.getElementById("input").addEventListener("keydown", (e) => {
 
 document.getElementById("clear").onclick = async () => {
   if (!confirm("Clear all chat history? This can't be undone.")) return;
-  await fetch("/api/clear-history", { method: "POST" });
+  await apiFetch("/api/clear-history", { method: "POST" });
   conversation = [];
   document.getElementById("chat").innerHTML = "";
 };
@@ -130,6 +159,26 @@ document.getElementById("clear").onclick = async () => {
 if ("serviceWorker" in navigator) {
   navigator.serviceWorker.register("/service-worker.js").catch((e) => console.error("SW failed", e));
 }
+
+// --- Real alerts: ask permission, then poll the server every minute for due items ---
+if ("Notification" in window && Notification.permission === "default") {
+  Notification.requestPermission();
+}
+
+async function checkDue() {
+  if (!("Notification" in window) || Notification.permission !== "granted") return;
+  try {
+    const res = await apiFetch("/api/due-check");
+    const data = await res.json();
+    for (const alert of data.alerts || []) {
+      new Notification(alert.title, { body: alert.body, icon: "/icon-192.png" });
+    }
+  } catch (e) {
+    console.error("due-check failed", e);
+  }
+}
+checkDue();
+setInterval(checkDue, 60000); // every minute while the app/tab is open
 
 // --- Voice input (Chrome / Android) ---
 const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
